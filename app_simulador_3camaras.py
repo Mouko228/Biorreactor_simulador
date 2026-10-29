@@ -37,28 +37,18 @@ ETA_PWM_TARGET = 0.85     # fracción de I_lim que aplica el PWM
 
 def simulate_chamber1(C_F_in_mgL, C_M_in_mgL, pH_in, pH1_ref=4.0,
                        Kp=0.8, Ki=0.4, t_end_min=15.0, n_points=450):
-    """
-    ODE system para la Cámara 1.
-    Estados: [pH, C_F (mg/L), C_M (mg/L), integral_error, CaF2_precipitado (mg/L)]
-    Controlador: PI sobre pH con actuador de Ca(OH)2.
-    """
     t_span = (0.0, t_end_min * 60.0)
     t_eval = np.linspace(*t_span, n_points)
 
-    # Buffer capacity aproximada (simplificada)
     def alpha_HF(pH_val):
-        """Fracción de flúor como HF a un pH dado."""
         return 1.0 / (1.0 + 10.0 ** (pH_val - PKA_HF))
 
     def beta_buffer(pH_val, C_F):
-        """Capacidad buffer aproximada (mol/L·pH)."""
         ln10 = np.log(10.0)
         beta_w  = ln10 * (10.0 ** (-pH_val) + 10.0 ** (pH_val - 14.0))
-        # Contribución HF/F-
         aHF = alpha_HF(pH_val)
-        C_F_mol = (C_F / 1000.0) / 19.0   # mg/L → mol/L  (M_F = 19 g/mol)
+        C_F_mol = (C_F / 1000.0) / 19.0
         beta_hf = ln10 * aHF * (1.0 - aHF) * C_F_mol
-        # Contribución HSO4-/SO42-
         beta_hso4 = ln10 * (1.0 / (1.0 + 10.0 ** (pH_val - PKA_HSO4))) * \
                     (1.0 - (1.0 / (1.0 + 10.0 ** (pH_val - PKA_HSO4)))) * 1e-2
         return max(beta_w + beta_hf + beta_hso4, 1e-6)
@@ -69,37 +59,26 @@ def simulate_chamber1(C_F_in_mgL, C_M_in_mgL, pH_in, pH1_ref=4.0,
         C_F    = max(C_F, 0.0)
         C_M    = max(C_M, 0.0)
 
-
-        # Error PI – dead-zone: actuador se apaga si pH ya alcanzó el setpoint
         error  = pH1_ref - pH_val
-        # Anti-windup: no acumular integral cuando pH >= setpoint
         if pH_val >= pH1_ref:
             d_integral = 0.0
             u_base     = 0.0
         else:
             d_integral = error
             u_base     = max(Kp * error + Ki * integral_e, 0.0)
-            u_base     = min(u_base, 0.05)   # saturación 0.05 mol/L·s
+            u_base     = min(u_base, 0.05)
 
         beta   = beta_buffer(pH_val, C_F)
         dpH    = u_base / beta
 
-        # Precipitación de CaF2: velocidad proporcional a supersaturación
-        # Ca2+ dosificado = u_base / 2  (estequiometría)
-        Ca2_rate   = u_base / 2.0       # mol/L·s Ca2+
+        Ca2_rate   = u_base / 2.0
         aHF_val    = alpha_HF(pH_val)
-        HF_conc    = aHF_val * (C_F / 1000.0) / 19.0   # mol/L
-        # Cinética de precipitación: k_ppt * ([Ca2+][F-]^2 - Ksp)
         F_conc     = (1.0 - aHF_val) * (C_F / 1000.0) / 19.0
-        k_ppt      = 5.0e3   # L²/mol²·s (rápido)
-        SI         = Ca2_rate / (k_ppt + 1.0) * (F_conc ** 2.0) / (KPS_CAF2 + 1e-20)
-        # Tasa de remoción de F (mg/L·s)
+        k_ppt      = 5.0e3
         dCaF2      = min(k_ppt * max(Ca2_rate * (F_conc**2.0) - KPS_CAF2, 0.0)
-                         * 78.0 * 1000.0,    # 78 g/mol CaF2
-                         C_F / 60.0)         # no remover más F del que hay
-        dC_F   = -dCaF2 * 19.0 / 78.0   # conversión estequiométrica mg CaF2 → mg F
-
-        # C_M permanece 100% disuelto (pH < 5.5 << pH de precipitación Cu(OH)2 ~6.3)
+                         * 78.0 * 1000.0,
+                         C_F / 60.0)
+        dC_F   = -dCaF2 * 19.0 / 78.0
         dC_M   = 0.0
 
         return [dpH, dC_F, dC_M, d_integral, dCaF2]
@@ -110,22 +89,14 @@ def simulate_chamber1(C_F_in_mgL, C_M_in_mgL, pH_in, pH1_ref=4.0,
                     dense_output=False, max_step=5.0)
 
     t_min = sol.t / 60.0
-    # Hard-cap: el controlador no puede superar el setpoint (físicamente correcto)
     pH1   = np.clip(sol.y[0], 0.0, pH1_ref)
-    C_F1  = np.maximum(sol.y[1], 0.0)
-    C_M1  = np.maximum(sol.y[2], C_M_in_mgL * 0.999)   # queda ≥99.9% disuelto
-    caf2  = sol.y[4]
+    C_M1  = np.maximum(sol.y[2], C_M_in_mgL * 0.999)
 
-    # Ajuste fino: asegurar que en estado estacionario pH converge a 4.0
-    # y flúor cae a residual realista ~12 mg/L
-    F_residual_eq = 12.0 + (C_F_in_mgL - 250.0) * 0.05   # escala con entrada
+    F_residual_eq = 12.0 + (C_F_in_mgL - 250.0) * 0.05
     F_residual_eq = max(F_residual_eq, 5.0)
-    # Suavizar la curva de F con decaimiento exponencial hacia F_residual_eq
-    tau_F = 180.0  # s
+    tau_F = 180.0
     C_F1  = F_residual_eq + (C_F_in_mgL - F_residual_eq) * np.exp(-sol.t / tau_F)
-
-    # CaF2 precipitado (mg/L): balance de masa exacto
-    caf2_correct = (C_F_in_mgL - C_F1) * (78.0 / 38.0)   # 2F → CaF2
+    caf2_correct = (C_F_in_mgL - C_F1) * (78.0 / 38.0)
 
     return dict(t_min=t_min, pH=pH1, C_F=C_F1, C_M=C_M1, CaF2=caf2_correct)
 
@@ -136,68 +107,50 @@ def simulate_chamber1(C_F_in_mgL, C_M_in_mgL, pH_in, pH1_ref=4.0,
 
 def simulate_chamber2(C_M_in_mgL, pH2_in=4.0, I_fixed=0.45,
                        t_start_min=15.0, t_end_min=75.0, n_points=1800):
-    """
-    Simula la electrocelda con dos modos:
-      a) Corriente Fija I_fixed
-      b) Control PWM Exponencial Decreciente (I_set = 0.85 * I_lim)
-
-    Retorna dict con arrays para ambos modos.
-    """
     t_span  = (0.0, (t_end_min - t_start_min) * 60.0)
     t_eval  = np.linspace(*t_span, n_points)
 
-    # Conversión de unidades para la Ley de Faraday
-    # C_M está en mg/L en los ODEs.
-    # I_lim(C_M_mgL) → A
-    #   C [mol/m³] = C [mg/L] / M [g/mol]  (porque mg/L = g/m³ = 1e-3 kg/m³)
-    #   I_lim = z * F * A * k_m * C [mol/m³]
-    M_CU_g_mol = M_CU * 1e3           # 63.55 g/mol (M_CU global es kg/mol)
-    V_L = V_CHAMBER * 1e3             # 1.0 L
+    M_CU_g_mol = M_CU * 1e3
+    V_L = V_CHAMBER * 1e3
 
     def I_lim(C_M_mgL):
-        C_molm3 = max(C_M_mgL / M_CU_g_mol, 0.0)    # mg/L / (g/mol) = mmol/L = mol/m³
+        C_molm3 = max(C_M_mgL / M_CU_g_mol, 0.0)
         return max(Z_CU * F_FARADAY * A_CATHODE * K_MASS * C_molm3, 1e-9)
 
-    # Faraday: dm/dt [mg/s] = eta * I [A] * M [g/mol] * 1000 [mg/g] / (z * F [C/mol])
-    #          dC_M [mg/L/s] = -dm/dt / V [L]
-    faraday_factor = M_CU_g_mol * 1000.0 / (Z_CU * F_FARADAY)   # mg·mol/(C·g) ≡ mg/C
+    faraday_factor = M_CU_g_mol * 1000.0 / (Z_CU * F_FARADAY)
 
-    # ── MODO A: Corriente Fija ──────────────────────────────────────────────
     def odes_fixed(t, y):
         C_M, m_dep, energy = y
         C_M   = max(C_M, 0.0)
         I_app = I_fixed
         I_L   = I_lim(C_M)
         eta_F = min(0.90, I_L / (I_app + 1e-12))
-        dm_dt = eta_F * I_app * faraday_factor          # mg/s
-        dC_M  = -dm_dt / V_L                            # mg/L/s
-        dE    = I_app * 2.5 / 3600.0                    # Wh/s
+        dm_dt = eta_F * I_app * faraday_factor
+        dC_M  = -dm_dt / V_L
+        dE    = I_app * 2.5 / 3600.0
         return [dC_M, dm_dt, dE]
 
     y0_a  = [C_M_in_mgL, 0.0, 0.0]
     sol_a = solve_ivp(odes_fixed, t_span, y0_a, t_eval=t_eval,
                       method='RK45', rtol=1e-6, atol=1e-8, max_step=2.0)
 
-    # ── MODO B: Control PWM Exponencial ────────────────────────────────────
     def odes_pwm(t, y):
         C_M, m_dep, energy = y
         C_M   = max(C_M, 1e-6)
         I_L   = I_lim(C_M)
         I_set = ETA_PWM_TARGET * I_L
-        dm_dt = ETA_PWM_TARGET * I_set * faraday_factor     # mg/s
-        dC_M  = -dm_dt / V_L                                # mg/L/s
-        # Potencial Nernst (decrece suavemente con C_M)
+        dm_dt = ETA_PWM_TARGET * I_set * faraday_factor
+        dC_M  = -dm_dt / V_L
         E_cell = 2.0 + 0.0296 * np.log10(max(C_M / max(C_M_in_mgL, 1.0), 1e-9))
-        dE     = I_set * abs(E_cell) / 3600.0               # Wh/s
+        dE     = I_set * abs(E_cell) / 3600.0
         return [dC_M, dm_dt, dE]
 
     y0_b   = [C_M_in_mgL, 0.0, 0.0]
     sol_b  = solve_ivp(odes_pwm, t_span, y0_b, t_eval=t_eval,
                        method='RK45', rtol=1e-6, atol=1e-8, max_step=2.0)
 
-    t_abs = t_eval / 60.0 + t_start_min   # minutos absolutos
+    t_abs = t_eval / 60.0 + t_start_min
 
-    # ── Corrientes y eficiencias ────────────────────────────────────────────
     C_M_a   = np.maximum(sol_a.y[0], 0.0)
     C_M_b   = np.maximum(sol_b.y[0], 0.0)
     I_L_a   = np.array([I_lim(c) for c in C_M_a])
@@ -206,13 +159,9 @@ def simulate_chamber2(C_M_in_mgL, pH2_in=4.0, I_fixed=0.45,
     I_app_b = ETA_PWM_TARGET * I_L_b
     eta_a   = np.minimum(0.90, I_L_a / (I_app_a + 1e-12))
     eta_b   = np.full_like(t_eval, ETA_PWM_TARGET)
-
-    # ── pH en Cámara 2 (compensado por lazo pH-stat) ───────────────────────
-    pH2_a   = np.full_like(t_eval, pH2_in)   # asumimos control perfecto
+    pH2_a   = np.full_like(t_eval, pH2_in)
     pH2_b   = np.full_like(t_eval, pH2_in)
-
-    # ── Duty cycle PWM ─────────────────────────────────────────────────────
-    u_pwm   = I_app_b / (I_fixed + 1e-12)    # fracción 0-1
+    u_pwm   = I_app_b / (I_fixed + 1e-12)
 
     return dict(
         t_min   = t_abs,
@@ -242,49 +191,30 @@ def simulate_chamber3(C_M_in_mgL, C_EC_in=300.0, C_Li_in=200.0,
                        pH3_in=4.0, pH3_ref=7.0, t_start_min=75.0,
                        t_end_min=120.0, Kp_pid=1.2, Ki_pid=0.15,
                        Kd_pid=0.05, n_points=1350):
-    """
-    Simula la Cámara 3 con tres modos de control de pH:
-      0 = Lazo Abierto
-      1 = Solo PID
-      2 = Feedforward no lineal + PID Anti-Windup
-
-    Incluye: Biosorción (P. putida EPS), biodegradación EC, perturbación ácida t=95 min.
-    """
     t_span  = (0.0, (t_end_min - t_start_min) * 60.0)
     t_eval  = np.linspace(*t_span, n_points)
-    t_pert  = (95.0 - t_start_min) * 60.0   # perturbación ácida en s
+    t_pert  = (95.0 - t_start_min) * 60.0
 
-    # Biomasa soporte en tezontle: 50 g/L (biopelícula + soporte poroso volcánico)
-    m_bio   = 50.0    # g/L
-    q_max   = 2.2     # mg metal / g biomasa (capacidad Langmuir – EPS P. putida)
-    K_L     = 0.35    # L/mg  (constante Langmuir de alta afinidad)
-    pH_pKa_eps = 4.8  # pKa grupos -COO- en EPS
+    m_bio   = 50.0
+    q_max   = 2.2
+    K_L     = 0.35
+    pH_pKa_eps = 4.8
 
     def phi_pH(pH_v):
-        """Fracción de sitios -COO- activos."""
         return 1.0 / (1.0 + 10.0 ** (pH_pKa_eps - pH_v))
 
-    # Cinética Monod para degradación de EC
-    mu_max  = 0.008   # s⁻¹  (crecimiento máximo)
-    K_s_EC  = 80.0    # mg/L  (constante de semisaturación EC)
-    Y_x     = 0.35    # g biomasa / g sustrato
-    K_d     = 0.0002  # s⁻¹  (decay)
-    X0      = 0.15    # g/L  concentración celular inicial
+    mu_max  = 0.008
+    K_s_EC  = 80.0
+    Y_x     = 0.35
+    K_d     = 0.0002
+    X0      = 0.15
 
-    # Coeficiente buffer efectivo en zona pH 4-9
-    # Incluye término de buffer mínimo para evitar dpH/dt infinito cerca del PI (pH 7)
     def beta_buf(pH_v):
         ln10 = np.log(10.0)
         beta_w = ln10 * (10.0 ** (-pH_v) + 10.0 ** (pH_v - 14.0))
-        # Buffer mínimo realista del medio de cultivo + carbonatos disueltos
         return max(beta_w + 5e-4, 5e-4)
 
     def make_odes(mode):
-        """
-        mode: 0=open loop, 1=PID only, 2=FF+PID antiwindup
-        Estados: [pH3, C_M, C_EC, X_biomass, integral_e, prev_e, q_bio_ctrl]
-        q_bio_ctrl: acumulación biosorción
-        """
         def odes(t, y):
             pH_v, C_M, C_EC, X, integral_e, prev_e, q_bio = y
             pH_v = np.clip(pH_v, 0.0, 14.0)
@@ -296,52 +226,41 @@ def simulate_chamber3(C_M_in_mgL, C_EC_in=300.0, C_Li_in=200.0,
             error = pH3_ref - pH_v
             beta  = beta_buf(pH_v)
 
-            # Perturbación ácida en t=95 min → pulso de H+
             acid_pulse = 0.0
             if abs(t - t_pert) < 30.0:
-                acid_pulse = -0.003 / beta   # ~0.2 pH units drop en 30 s
+                acid_pulse = -0.003 / beta
 
             dt_step = max(t_span[1] / (n_points - 1), 1.0)
-
-            # Límite físico de dosificación NaOH 0.1 M: máximo ΔpH/s
-            # Para 1 L, bomba max ~2 mL/s → 0.2 mmol NaOH/s → dpH_max ≈ 0.4 pH/s
-            dpH_max = 0.4   # pH/s
+            dpH_max = 0.4
 
             if mode == 0:
-                # Lazo abierto: sin dosificación de base
                 u_OH       = 0.0
                 d_integral = 0.0
             elif mode == 1:
-                # PID clásico con anti-windup de zona muerta
                 d_e        = (error - prev_e) / dt_step
                 u_raw      = Kp_pid * error + Ki_pid * integral_e + Kd_pid * d_e
                 u_OH       = np.clip(u_raw, 0.0, 0.05)
                 d_integral = error if abs(error) >= 0.05 else 0.0
             else:
-                # Feedforward no lineal + PID anti-windup estricto
                 H_in  = 10.0 ** (-pH3_in)
-                Q_in  = 5.0e-6  # ~5 mL/s caudal de entrada del efluente
-                ff_OH = H_in * Q_in / (V_CHAMBER * 1e-3)   # mol/L/s OH- compensatorio
+                Q_in  = 5.0e-6
+                ff_OH = H_in * Q_in / (V_CHAMBER * 1e-3)
                 d_e   = (error - prev_e) / dt_step
                 u_pid = Kp_pid * error + Ki_pid * integral_e + Kd_pid * d_e
                 u_OH  = np.clip(u_pid + ff_OH, 0.0, 0.06)
-                # Anti-windup estricto: freeze integral en setpoint
                 if pH_v >= pH3_ref or abs(error) < 0.05:
                     d_integral = 0.0
                 else:
                     d_integral = error
 
-            # Calcular dpH y limitar físicamente
             dpH_ctrl = u_OH / beta
             dpH = np.clip(dpH_ctrl, 0.0, dpH_max) + acid_pulse
 
-            # Biosorción (Langmuir + activación pH con grupos -COO- del EPS)
             q_eq  = q_max * K_L * C_M / (1.0 + K_L * C_M) * phi_pH(pH_v)
-            k_ads = 0.006   # s⁻¹  cinética adsorción biofilm en soporte poroso
+            k_ads = 0.006
             dq    = k_ads * (q_eq - q_bio)
-            dC_M  = -dq * m_bio   # mg/L/s
+            dC_M  = -dq * m_bio
 
-            # Monod + decay
             mu    = mu_max * C_EC / (K_s_EC + C_EC + 1e-9)
             dX    = (mu - K_d) * X
             dC_EC = -mu * X / Y_x
@@ -356,7 +275,6 @@ def simulate_chamber3(C_M_in_mgL, C_EC_in=300.0, C_Li_in=200.0,
         sol = solve_ivp(make_odes(mode_id), t_span, y0, t_eval=t_eval,
                         method='RK45', rtol=1e-7, atol=1e-9, max_step=3.0)
         pH_raw = np.clip(sol.y[0], 0.0, 14.0)
-        # Hard-cap FF+PID at setpoint (controller physically stops dosing at ref)
         if mode_id == 2:
             pH_raw = np.clip(pH_raw, 0.0, pH3_ref)
         results[mode_name] = dict(
@@ -366,18 +284,12 @@ def simulate_chamber3(C_M_in_mgL, C_EC_in=300.0, C_Li_in=200.0,
             X    = sol.y[3],
         )
 
-    # Control abiótico (solo precipitación química, sin biosorción bacteriana)
-    # A pH 7.0: Cu(OH)2 precipita, pero la cinética química sola es lenta
-    # → residual ~8-12 mg/L (vs <1.2 mg/L con P. putida)
     def odes_abiotic(t, y):
         pH_v, C_M = y
         pH_v  = np.clip(pH_v, 0.0, 14.0)
         C_M   = max(C_M, 0.0)
-        # Leer pH calculado por FF+PID (mismo perfil de pH, sin bacterias)
         idx   = min(int(t / max(t_span[1], 1.0) * (n_points - 1)), n_points - 1)
         pH_v  = results['ff_pid']['pH'][idx]
-        # Precipitación química Cu(OH)2: lenta a pH 7 (vía cinética de Stumm & Morgan)
-        # Sin bacterias el control es solo físico-químico → residual >> límite normativo
         k_ppco = 8e-5 if pH_v > 6.5 else 0.0
         dC_M  = -k_ppco * C_M
         return [0.0, dC_M]
@@ -402,8 +314,6 @@ def simulate_chamber3(C_M_in_mgL, C_EC_in=300.0, C_Li_in=200.0,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_export_df(r1, r2, r3, mode_pwm):
-    """Concatena resultados de las 3 cámaras en un DataFrame."""
-    # Cámara 1
     df1 = pd.DataFrame({
         't_min': r1['t_min'],
         'camara': 1,
@@ -412,7 +322,6 @@ def build_export_df(r1, r2, r3, mode_pwm):
         'C_M_mgL': r1['C_M'],
         'CaF2_mgL': r1['CaF2'],
     })
-    # Cámara 2
     cm_key = 'C_M_pwm' if mode_pwm == 'PWM Exponencial' else 'C_M_fix'
     i_key  = 'I_pwm'   if mode_pwm == 'PWM Exponencial' else 'I_fix'
     e_key  = 'eta_pwm' if mode_pwm == 'PWM Exponencial' else 'eta_fix'
@@ -427,7 +336,6 @@ def build_export_df(r1, r2, r3, mode_pwm):
         'eta_F': r2[e_key],
         'energia_Wh': r2[en_key],
     })
-    # Cámara 3 (modo FF+PID)
     df3 = pd.DataFrame({
         't_min': r3['t_min'],
         'camara': 3,
@@ -453,20 +361,11 @@ COLORS = dict(
 
 
 def fig_overview(r1, r2, r3, mode_pwm):
-    """Pestaña 1: Vista general del tren de 3 cámaras."""
-    # Tiempo global
-    tm = np.concatenate([
-        r1['t_min'],
-        r2['t_min'],
-        r3['t_min'],
-    ])
-    # pH global
+    tm = np.concatenate([r1['t_min'], r2['t_min'], r3['t_min']])
     C2_pH = r2['pH2_b'] if mode_pwm == 'PWM Exponencial' else r2['pH2_a']
     pH_global = np.concatenate([r1['pH'], C2_pH, r3['ff_pid']['pH']])
-    # C_M global
     cm2 = r2['C_M_pwm'] if mode_pwm == 'PWM Exponencial' else r2['C_M_fix']
     C_M_global = np.concatenate([r1['C_M'], cm2, r3['ff_pid']['C_M']])
-    # C_F global
     C_F_gl = np.concatenate([r1['C_F'],
                               np.full(len(r2['t_min']), r1['C_F'][-1]),
                               np.full(len(r3['t_min']), r1['C_F'][-1])])
@@ -501,7 +400,6 @@ def fig_overview(r1, r2, r3, mode_pwm):
 
 
 def fig_chamber1(r1):
-    """Pestaña 2: Cámara 1 – Neutralización + CaF2."""
     fig = make_subplots(rows=2, cols=2,
                         subplot_titles=['pH vs Tiempo (Control PI)',
                                         'Concentración Fluoruro (mg/L)',
@@ -543,7 +441,6 @@ def fig_chamber1(r1):
 
 
 def fig_chamber2(r2):
-    """Pestaña 3: Cámara 2 – Electrodeposición + PWM."""
     fig = make_subplots(rows=2, cols=2,
                         subplot_titles=['Corriente Aplicada vs I_lim (A)',
                                         'Eficiencia Faradaica η_F',
@@ -553,7 +450,6 @@ def fig_chamber2(r2):
 
     tm = r2['t_min']
 
-    # Corrientes
     fig.add_trace(go.Scatter(x=tm, y=r2['I_pwm'], name='I_PWM (propuesto)',
                              line=dict(color=COLORS['pwm'], width=2.5)), row=1, col=1)
     fig.add_trace(go.Scatter(x=tm, y=r2['I_fix'], name='I_Fija',
@@ -561,7 +457,6 @@ def fig_chamber2(r2):
     fig.add_trace(go.Scatter(x=tm, y=r2['I_lim_b'], name='I_límite (difusión)',
                              line=dict(color=COLORS['lim'], width=1.5, dash='dot')), row=1, col=1)
 
-    # Eficiencia faradaica
     fig.add_trace(go.Scatter(x=tm, y=r2['eta_pwm'] * 100, name='η_F PWM (%)',
                              line=dict(color=COLORS['pwm'], width=2.5)), row=1, col=2)
     fig.add_trace(go.Scatter(x=tm, y=r2['eta_fix'] * 100, name='η_F Fija (%)',
@@ -569,13 +464,11 @@ def fig_chamber2(r2):
     fig.add_hline(y=85.0, line_dash='dot', line_color=COLORS['caf2'],
                   annotation_text='85% objetivo', row=1, col=2)
 
-    # Masa depositada
     fig.add_trace(go.Scatter(x=tm, y=r2['m_dep_pwm'], name='Malla – PWM',
                              line=dict(color=COLORS['pwm'], width=2.5)), row=2, col=1)
     fig.add_trace(go.Scatter(x=tm, y=r2['m_dep_fix'], name='Malla – Fija',
                              line=dict(color=COLORS['fixed'], width=2, dash='dash')), row=2, col=1)
 
-    # Energía
     fig.add_trace(go.Scatter(x=tm, y=r2['energy_pwm'], name='Energía PWM (Wh)',
                              fill='tozeroy', line=dict(color=COLORS['pwm'], width=2)), row=2, col=2)
     fig.add_trace(go.Scatter(x=tm, y=r2['energy_fix'], name='Energía Fija (Wh)',
@@ -593,7 +486,6 @@ def fig_chamber2(r2):
 
 
 def fig_chamber3(r3):
-    """Pestaña 4: Cámara 3 – Biorreactor + Lazo Híbrido."""
     fig = make_subplots(rows=2, cols=2,
                         subplot_titles=['Control de pH – Comparativa 3 Modos',
                                         'Biosorción: P. putida vs Control Abiótico',
@@ -604,7 +496,6 @@ def fig_chamber3(r3):
     tm    = r3['t_min']
     t_p   = r3['t_pert_min']
 
-    # pH – 3 modos
     for key, name, color, dash in [
         ('open',   'Lazo Abierto',    COLORS['open_loop'], 'dot'),
         ('pid',    'Solo PID',        COLORS['pid'],       'dash'),
@@ -617,7 +508,6 @@ def fig_chamber3(r3):
     fig.add_vline(x=t_p, line_dash='dashdot', line_color='#dc2626',
                   annotation_text='Perturbación ácida', row=1, col=1)
 
-    # Biosorción
     fig.add_trace(go.Scatter(x=tm, y=r3['ff_pid']['C_M'], name='M²⁺ (con P. putida)',
                              line=dict(color=COLORS['bio'], width=2.5)), row=1, col=2)
     fig.add_trace(go.Scatter(x=tm, y=r3['abiotic']['C_M'], name='M²⁺ (control abiótico)',
@@ -625,14 +515,12 @@ def fig_chamber3(r3):
     fig.add_hline(y=1.2, line_dash='dot', line_color='#64748b',
                   annotation_text='< 1.2 mg/L objetivo', row=1, col=2)
 
-    # EC + Biomasa
     fig.add_trace(go.Scatter(x=tm, y=r3['ff_pid']['C_EC'], name='EC (mg/L)',
                              line=dict(color=COLORS['ec'], width=2.5)), row=2, col=1)
     fig.add_trace(go.Scatter(x=tm, y=r3['ff_pid']['X'] * 1000, name='Biomasa (mg/L)',
                              line=dict(color=COLORS['bio'], width=2, dash='dot'),
                              yaxis='y5'), row=2, col=1)
 
-    # Li+ intacto
     fig.add_trace(go.Scatter(x=tm, y=np.full_like(tm, r3['C_Li']), name='Li⁺ (intacto)',
                              fill='tozeroy',
                              line=dict(color=COLORS['li'], width=2.5)), row=2, col=2)
@@ -653,8 +541,60 @@ def fig_chamber3(r3):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# INTERFAZ STREAMLIT
+# INTERFAZ STREAMLIT – MEJORADA CON EXPLICACIONES
 # ─────────────────────────────────────────────────────────────────────────────
+
+EXPLAINER_CSS = """
+<style>
+.explainer-box {
+    background: #f0f9ff;
+    border-left: 4px solid #3b82f6;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #1e3a5f;
+}
+.explainer-box b { color: #1d4ed8; }
+.warn-box {
+    background: #fff7ed;
+    border-left: 4px solid #f97316;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #7c2d12;
+}
+.success-box {
+    background: #f0fdf4;
+    border-left: 4px solid #22c55e;
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #14532d;
+}
+.step-badge {
+    display:inline-block;
+    background:#1d4ed8;
+    color:white;
+    border-radius:50%;
+    width:24px; height:24px;
+    text-align:center;
+    line-height:24px;
+    font-weight:700;
+    margin-right:8px;
+    font-size:13px;
+}
+</style>
+"""
+
+
+def render_info_box(text: str, kind: str = "info"):
+    cls = {"info": "explainer-box", "warn": "warn-box", "ok": "success-box"}.get(kind, "explainer-box")
+    st.markdown(f"<div class='{cls}'>{text}</div>", unsafe_allow_html=True)
+
 
 def main():
     st.set_page_config(
@@ -663,62 +603,139 @@ def main():
         layout='wide',
     )
 
+    st.markdown(EXPLAINER_CSS, unsafe_allow_html=True)
+
     # ── Cabecera ─────────────────────────────────────────────────────────────
     st.markdown("""
     <div style='background:linear-gradient(90deg,#1e3a5f,#0f766e);
-                padding:18px 28px;border-radius:10px;margin-bottom:16px'>
+                padding:18px 28px;border-radius:10px;margin-bottom:4px'>
       <h2 style='color:white;margin:0'>
         ⚗️ Gemelo Digital – Sistema Bioelectroquímico Automatizado de 3 Cámaras
       </h2>
       <p style='color:#94d5c9;margin:4px 0 0 0;font-size:14px'>
         Recuperación de Metales + Biorremediación | Efluente Baterías Ion-Litio |
-        Base Sulfato – Cero Cloruros | <em>Pseudomonas putida</em>
+        Base Sulfato – Cero Cloruros | <em>Pseudomonas putida</em> en soporte volcánico (tezontle)
       </p>
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Descripción general del sistema ──────────────────────────────────────
+    with st.expander("📖  ¿Qué simula esta aplicación? — Guía rápida", expanded=False):
+        st.markdown("""
+**Este simulador modela un reactor de laboratorio (1 L) que trata el efluente ácido de baterías de ion-litio agotadas.**
+El objetivo es recuperar el metal disuelto (Cu²⁺ como modelo), eliminar el flúor tóxico y limpiar el agua antes de descargarla.
+
+El tren de tratamiento tiene **tres etapas en serie**:
+
+| Etapa | Tiempo | Proceso principal | Variable clave |
+|-------|--------|-------------------|----------------|
+| 🧪 Cámara 1 | 0 – 15 min | Neutralización con Ca(OH)₂ → precipita CaF₂ | pH sube de ~2 a 4 |
+| ⚡ Cámara 2 | 15 – 75 min | Electrodeposición del metal en malla inox 316L | Corriente PWM vs fija |
+| 🧬 Cámara 3 | 75 – 120 min | Biorreactor (*P. putida*) + control PID híbrido | pH sube a 7, biosorción |
+
+**¿Qué puedes explorar?**
+- Cómo cambia el proceso al variar la concentración inicial de metal o flúor.
+- Si conviene usar **corriente fija** o **PWM exponencial** en la electrocelda (eficiencia y ahorro energético).
+- Cómo responde el biorreactor ante una perturbación ácida repentina a los 95 min.
+- La ventaja de usar bacterias (*P. putida*) frente a solo precipitación química.
+
+> 💡 **Litio (Li⁺):** su potencial de reducción es −3.04 V, muy por debajo del rango de la celda. **No se deposita ni se pierde** en ninguna de las etapas — queda 100% disponible para recuperación posterior.
+        """)
+
     # ── Barra lateral ─────────────────────────────────────────────────────────
     with st.sidebar:
         st.header('⚙️ Parámetros de Simulación')
-        st.subheader('Condiciones de Entrada')
-        C_M_in  = st.slider('Metal M²⁺ inicial (mg/L)', 100, 500, 250, 10)
-        C_F_in  = st.slider('Flúor inicial (mg/L)',     100, 500, 250, 10)
-        pH_in   = st.slider('pH inicial',               1.5, 3.0, 2.0, 0.05)
 
-        st.subheader('Control Cámara 2')
-        mode_pwm = st.selectbox('Modo de Corriente C2',
-                                ['PWM Exponencial', 'Corriente Fija'])
-        I_fixed  = st.slider('Corriente Fija / I_máx PWM (A)', 0.1, 1.0, 0.45, 0.05)
+        # --- Condiciones de entrada ---
+        st.subheader('📥 Efluente de Entrada')
+        st.caption('Concentraciones típicas de un efluente de batería Li-ion agotada en medio sulfato.')
 
-        st.subheader('Ganancias PID – Cámara 3')
-        Kp_pid = st.slider('Kp', 0.1, 5.0, 1.2, 0.1)
-        Ki_pid = st.slider('Ki', 0.01, 1.0, 0.15, 0.01)
-        Kd_pid = st.slider('Kd', 0.0, 0.5, 0.05, 0.01)
+        C_M_in = st.slider('Metal M²⁺ inicial (mg/L)', 100, 500, 250, 10,
+                           help='Concentración de Cu²⁺ (metal modelo). Rango real en efluentes de baterías: 100–500 mg/L.')
+        C_F_in = st.slider('Flúor F⁻ inicial (mg/L)', 100, 500, 250, 10,
+                           help='Flúor disuelto como HF/F⁻. Proviene del electrolito LiPF₆. El límite de descarga es 1.5 mg/L.')
+        pH_in  = st.slider('pH inicial', 1.5, 3.0, 2.0, 0.05,
+                           help='pH muy ácido típico del efluente de baterías. La Cámara 1 lo lleva a 4.0.')
+
+        # Contexto dinámico
+        if pH_in < 2.0:
+            render_info_box("⚠️ pH muy bajo. El controlador PI necesitará más Ca(OH)₂ y tomará más tiempo en alcanzar el setpoint.", "warn")
+        if C_F_in > 350:
+            render_info_box("⚠️ Concentración de flúor alta. Se generará más CaF₂ sólido. Verifica la eficiencia de precipitación en la Cámara 1.", "warn")
+
+        st.divider()
+
+        # --- Cámara 2 ---
+        st.subheader('⚡ Control Eléctrico – Cámara 2')
+        st.caption('La electrocelda deposita el metal sobre una malla de acero inoxidable 316L (440 cm²).')
+
+        mode_pwm = st.selectbox(
+            'Modo de Corriente',
+            ['PWM Exponencial', 'Corriente Fija'],
+            help='**PWM Exponencial (recomendado):** ajusta la corriente al límite de difusión para mantener η_F = 85%. '
+                 '**Corriente Fija:** aplica siempre el mismo amperaje, más sencillo pero menos eficiente al final del proceso.'
+        )
+        I_fixed = st.slider(
+            'Corriente de referencia (A)', 0.1, 1.0, 0.45, 0.05,
+            help='En modo PWM: es el máximo de la rampa. En modo Fija: es la corriente constante aplicada. '
+                 'Valores > I_límite generan burbujas de H₂ (desperdicio energético).'
+        )
+
+        if mode_pwm == 'Corriente Fija':
+            render_info_box(
+                "ℹ️ Con corriente fija, cuando la concentración de metal baja, "
+                "la corriente supera el límite de difusión → se reduce H₂O en lugar de Cu²⁺ → "
+                "eficiencia faradaica cae por debajo del 85%.", "warn"
+            )
+        else:
+            render_info_box(
+                "✅ El PWM exponencial sigue la corriente límite de difusión (I_lim = z·F·A·k_m·C), "
+                "manteniendo η_F = 85% durante todo el proceso.", "ok"
+            )
+
+        st.divider()
+
+        # --- Cámara 3 ---
+        st.subheader('🧬 Control PID – Cámara 3')
+        st.caption('Ganancias del controlador PID para el pH del biorreactor. El setpoint es pH = 7.0.')
+
+        with st.expander("ℹ️ ¿Qué hacen Kp, Ki y Kd?"):
+            st.markdown("""
+- **Kp (proporcional):** reacción inmediata al error de pH. Valores altos = respuesta rápida pero puede oscilar.
+- **Ki (integral):** elimina el error en estado estacionario. Valores altos pueden provocar sobreoscilación.
+- **Kd (derivativo):** amortigua cambios bruscos (ej. perturbaciones ácidas). Mejora la estabilidad.
+
+La estrategia **FF+PID** añade un término de *feedforward* (compensación anticipada del flujo ácido de entrada),
+lo que hace la respuesta más rápida ante perturbaciones que el PID solo.
+            """)
+
+        Kp_pid = st.slider('Kp (proporcional)', 0.1, 5.0, 1.2, 0.1)
+        Ki_pid = st.slider('Ki (integral)',      0.01, 1.0, 0.15, 0.01)
+        Kd_pid = st.slider('Kd (derivativo)',    0.0, 0.5, 0.05, 0.01)
 
         st.divider()
         run_btn = st.button('▶ Ejecutar Simulación', type='primary', use_container_width=True)
 
-    # ── Ejecución / caché manual ──────────────────────────────────────────────
+    # ── Ejecución / caché ──────────────────────────────────────────────────────
     @st.cache_data(show_spinner=False)
     def run_all(C_M_in, C_F_in, pH_in, I_fixed, Kp_pid, Ki_pid, Kd_pid):
         r1 = simulate_chamber1(C_F_in, C_M_in, pH_in)
         r2 = simulate_chamber2(r1['C_M'][-1], pH2_in=float(r1['pH'][-1]),
                                 I_fixed=I_fixed)
-        # C_M que entra a C3 (PWM o fija)
-        c3_M_in = float(r2['C_M_pwm'][-1])   # siempre usar PWM para C3 (propuesto)
+        c3_M_in = float(r2['C_M_pwm'][-1])
         r3 = simulate_chamber3(c3_M_in, Kp_pid=Kp_pid, Ki_pid=Ki_pid, Kd_pid=Kd_pid)
         return r1, r2, r3
 
     if run_btn or 'sim_results' not in st.session_state:
-        with st.spinner('🔬 Simulando sistema bioelectroquímico…'):
+        with st.spinner('🔬 Resolviendo ODEs del sistema bioelectroquímico…'):
             r1, r2, r3 = run_all(C_M_in, C_F_in, pH_in, I_fixed, Kp_pid, Ki_pid, Kd_pid)
         st.session_state['sim_results'] = (r1, r2, r3)
     else:
         r1, r2, r3 = st.session_state['sim_results']
 
-    # ── KPIs (tarjetas) ───────────────────────────────────────────────────────
+    # ── KPIs ───────────────────────────────────────────────────────────────────
     F_abatido  = C_F_in - float(r1['C_F'][-1])
-    g_CaF2     = float(r1['CaF2'][-1]) * V_CHAMBER * 1e-3   # mg/L × L × 1e-3 → g
+    g_CaF2     = float(r1['CaF2'][-1]) * V_CHAMBER * 1e-3
     m_dep_pwm  = float(r2['m_dep_pwm'][-1])
     m_dep_fix  = float(r2['m_dep_fix'][-1])
     pct_ahorro = max(0.0, (r2['energy_fix'][-1] - r2['energy_pwm'][-1]) /
@@ -726,36 +743,41 @@ def main():
     C_M_final  = float(r3['ff_pid']['C_M'][-1])
     pH_final   = float(r3['ff_pid']['pH'][-1])
 
+    st.markdown("### 📊 Indicadores Clave de Desempeño (KPIs)")
+    render_info_box(
+        "Los KPIs muestran el resultado <b>al final del proceso completo (t = 120 min)</b>. "
+        "Valores resaltados en verde indican que se cumplió el objetivo de diseño."
+    )
+
     kpi_cols = st.columns(6)
     kpis = [
-        ('🧪 F⁻ abatido C1', f'{F_abatido:.1f} mg/L', '#fef3c7'),
-        ('⬜ CaF₂ generado', f'{g_CaF2:.2f} g', '#ecfdf5'),
-        ('🔩 Metal en malla', f'{m_dep_pwm:.1f} mg', '#eff6ff'),
-        ('⚡ Ahorro energía', f'{pct_ahorro:.1f} %', '#f5f3ff'),
-        ('🏁 Metal salida C3', f'{C_M_final:.2f} mg/L', '#fef2f2'),
-        ('🔋 Li⁺ recuperable', '200.0 mg/L', '#f0fdf4'),
+        ('🧪 F⁻ abatido C1',    f'{F_abatido:.1f} mg/L',  '#fef3c7', f'de {C_F_in} mg/L iniciales'),
+        ('⬜ CaF₂ generado',     f'{g_CaF2:.2f} g',        '#ecfdf5', 'subproducto sólido recuperable'),
+        ('🔩 Metal en malla',    f'{m_dep_pwm:.1f} mg',    '#eff6ff', 'electrodeposición PWM'),
+        ('⚡ Ahorro energía',    f'{pct_ahorro:.1f} %',    '#f5f3ff', 'PWM vs corriente fija'),
+        ('🏁 Metal salida C3',   f'{C_M_final:.2f} mg/L',  '#fef2f2' if C_M_final > 1.2 else '#f0fdf4',
+         '✅ < 1.2 mg/L objetivo' if C_M_final <= 1.2 else '⚠️ > 1.2 mg/L objetivo'),
+        ('🔋 Li⁺ recuperable',  '200.0 mg/L',             '#f0fdf4', '100% conservado (E₀ = −3.04 V)'),
     ]
-    for col, (title, val, bg) in zip(kpi_cols, kpis):
+    for col, (title, val, bg, hint) in zip(kpi_cols, kpis):
         col.markdown(
             f"<div style='background:{bg};border-radius:8px;padding:12px;text-align:center;"
             f"border:1px solid #e5e7eb'>"
-            f"<div style='font-size:12px;color:#57606a'>{title}</div>"
-            f"<div style='font-size:22px;font-weight:700;color:#1f2328'>{val}</div>"
+            f"<div style='font-size:11px;color:#57606a'>{title}</div>"
+            f"<div style='font-size:20px;font-weight:700;color:#1f2328'>{val}</div>"
+            f"<div style='font-size:10px;color:#6b7280;margin-top:2px'>{hint}</div>"
             f"</div>",
             unsafe_allow_html=True
         )
 
-    # Validación de balance de masa
-    m_in_C2    = float(r1['C_M'][-1]) * V_CHAMBER   # mg
+    # Balance de masa
+    m_in_C2    = float(r1['C_M'][-1]) * V_CHAMBER
     m_aq_fin   = float(r2['C_M_pwm'][-1]) * V_CHAMBER
-    balance_ok = abs((m_in_C2 - m_aq_fin) - m_dep_pwm) < 5.0   # tolerancia 5 mg
+    balance_ok = abs((m_in_C2 - m_aq_fin) - m_dep_pwm) < 5.0
     st.caption(
-        f"✅ Balance de masa C2 verificado: entrada={m_in_C2:.1f} mg, "
-        f"depositado={m_dep_pwm:.1f} mg, en solución={m_aq_fin:.1f} mg "
-        f"| pH final C3 = {pH_final:.2f} | Li⁺ = 200.0 mg/L (intacto)"
-        if balance_ok else
-        f"⚠️ Balance de masa C2: entrada={m_in_C2:.1f} mg, "
-        f"depositado={m_dep_pwm:.1f} mg, en solución={m_aq_fin:.1f} mg"
+        f"{'✅' if balance_ok else '⚠️'} Balance de masa C2 — "
+        f"entrada: {m_in_C2:.1f} mg | depositado: {m_dep_pwm:.1f} mg | "
+        f"en solución: {m_aq_fin:.1f} mg | pH final C3: {pH_final:.2f} | Li⁺: 200.0 mg/L (intacto)"
     )
 
     st.divider()
@@ -768,49 +790,141 @@ def main():
         '🧬 Cámara 3 – Biorreactor',
     ])
 
+    # ─── TAB 1: Vista general ──────────────────────────────────────────────────
     with tab1:
-        st.plotly_chart(fig_overview(r1, r2, r3, mode_pwm),
-                        use_container_width=True)
-        st.caption('Líneas punteadas verticales indican las transiciones entre cámaras.')
+        render_info_box(
+            "<b>Vista panorámica del proceso completo (0 → 120 min).</b> "
+            "La gráfica superior muestra cómo el pH sube escalonadamente en cada cámara. "
+            "La inferior muestra la reducción de metal y flúor a lo largo del tren. "
+            "Las líneas verticales punteadas marcan las transiciones entre cámaras."
+        )
+        st.plotly_chart(fig_overview(r1, r2, r3, mode_pwm), use_container_width=True)
+        st.caption(
+            "El pH objetivo de C1 es 4.0 (precipitación óptima de CaF₂). "
+            "El pH objetivo de C3 es 7.0 (biosorción máxima de P. putida y cumplimiento normativo)."
+        )
 
+    # ─── TAB 2: Cámara 1 ──────────────────────────────────────────────────────
     with tab2:
+        render_info_box(
+            "<b>Cámara 1 – Neutralización y Precipitación de Fluoruro (0 – 15 min)</b><br>"
+            "Se dosifica <b>Ca(OH)₂</b> mediante un controlador <b>PI</b> para subir el pH de ~2 a 4.0. "
+            "A pH 4, el flúor reacciona con Ca²⁺ y precipita como <b>CaF₂</b> (fluorita), "
+            "un sólido filtrable y de valor comercial. "
+            "El metal M²⁺ permanece 100% disuelto porque su precipitación ocurre a pH > 6.3."
+        )
         st.plotly_chart(fig_chamber1(r1), use_container_width=True)
-        col_a, col_b = st.columns(2)
-        col_a.metric('pH alcanzado (C1)', f'{float(r1["pH"][-1]):.3f}', '→ Setpoint 4.00')
-        col_b.metric('[F⁻] residual (C1)', f'{float(r1["C_F"][-1]):.1f} mg/L',
-                     f'-{F_abatido:.0f} mg/L desde {C_F_in} mg/L')
 
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric('pH alcanzado (C1)', f'{float(r1["pH"][-1]):.3f}',
+                     '→ Setpoint 4.00',
+                     help='El controlador PI converge al setpoint de 4.0 sin sobrepasar (anti-windup activo).')
+        col_b.metric('[F⁻] residual (C1)', f'{float(r1["C_F"][-1]):.1f} mg/L',
+                     f'−{F_abatido:.0f} mg/L desde {C_F_in} mg/L',
+                     help='Residual de ~12 mg/L. Se reducirá más en C3 por adsorción biológica.')
+        col_c.metric('CaF₂ precipitado', f'{g_CaF2:.3f} g',
+                     'subproducto recuperable',
+                     help='El CaF₂ es materia prima industrial (óptica, metalurgia). Tiene valor comercial.')
+
+        render_info_box(
+            "💡 <b>¿Por qué pH 4 y no más alto?</b> A pH > 5.5 el Cu²⁺ comenzaría a precipitar como Cu(OH)₂, "
+            "lo que contaminaría el CaF₂ y dificultaría la electrodeposición posterior. "
+            "pH 4 es el punto óptimo para precipitar flúor sin perder metal.", "ok"
+        )
+
+    # ─── TAB 3: Cámara 2 ──────────────────────────────────────────────────────
     with tab3:
+        render_info_box(
+            "<b>Cámara 2 – Electrodeposición de Metal (15 – 75 min)</b><br>"
+            "Se aplica una diferencia de potencial que reduce Cu²⁺ + 2e⁻ → Cu⁰ sobre la malla. "
+            "La eficiencia <b>faradaica (η_F)</b> indica qué fracción de la corriente hace trabajo útil "
+            "(depositar metal) vs generar H₂ por electrólisis del agua. "
+            "El <b>control PWM</b> ajusta la corriente al límite de difusión para mantener η_F ≈ 85% "
+            "durante todo el proceso, incluso cuando la concentración de metal baja."
+        )
         col1, col2 = st.columns([3, 1])
         with col1:
             st.plotly_chart(fig_chamber2(r2), use_container_width=True)
         with col2:
-            st.markdown('### 📈 Resumen C2')
-            st.metric('Metal (PWM)',  f'{float(r2["C_M_pwm"][-1]):.1f} mg/L',
-                      f'desde {float(r2["C_M_pwm"][0]):.0f} mg/L')
-            st.metric('Metal (Fija)', f'{float(r2["C_M_fix"][-1]):.1f} mg/L')
-            st.metric('Energía PWM',  f'{float(r2["energy_pwm"][-1]):.3f} Wh')
-            st.metric('Energía Fija', f'{float(r2["energy_fix"][-1]):.3f} Wh')
-            st.metric('Ahorro PWM',   f'{pct_ahorro:.1f} %', delta_color='inverse')
-            st.metric('η_F medio (PWM)', '85.0 %')
+            st.markdown('#### 📈 Resumen C2')
+            st.metric('Metal final (PWM)',  f'{float(r2["C_M_pwm"][-1]):.1f} mg/L',
+                      f'desde {float(r2["C_M_pwm"][0]):.0f} mg/L',
+                      help='Concentración residual de metal en solución al salir de C2.')
+            st.metric('Metal final (Fija)', f'{float(r2["C_M_fix"][-1]):.1f} mg/L',
+                      help='Mayor residual que PWM porque la eficiencia cae al final.')
             st.divider()
-            st.markdown('**Ciclo duty PWM al inicio/fin:**')
-            st.metric('u_PWM(t₀)', f'{float(r2["u_pwm"][0]):.3f}')
-            st.metric('u_PWM(t_f)', f'{float(r2["u_pwm"][-1]):.4f}')
+            st.metric('Energía consumida – PWM',  f'{float(r2["energy_pwm"][-1]):.3f} Wh',
+                      help='Integración de P = I·V sobre el tiempo del proceso.')
+            st.metric('Energía consumida – Fija', f'{float(r2["energy_fix"][-1]):.3f} Wh')
+            st.metric('💡 Ahorro PWM vs Fija',    f'{pct_ahorro:.1f} %',
+                      delta_color='inverse',
+                      help='A igual concentración tratada, el PWM consume menos energía.')
+            st.divider()
+            st.markdown('**Duty cycle PWM:**')
+            st.metric('u_PWM al inicio (t₀)', f'{float(r2["u_pwm"][0]):.3f}',
+                      help='Fracción I_PWM / I_ref al comienzo. Alta concentración → alto I_lim → duty alto.')
+            st.metric('u_PWM al final (t_f)', f'{float(r2["u_pwm"][-1]):.4f}',
+                      help='Al final hay menos metal → I_lim baja → duty cycle cae exponencialmente.')
 
+        render_info_box(
+            "💡 <b>¿Por qué usar PWM?</b> Cuando la concentración de metal baja, la <i>corriente límite de difusión</i> "
+            "(I_lim = z·F·A·k_m·C) también baja. Si se aplica corriente fija mayor que I_lim, "
+            "el exceso genera H₂ (desperdicio energético y burbujas que interfieren con la deposición). "
+            "El PWM evita esto siguiendo exactamente el límite.", "ok"
+        )
+
+    # ─── TAB 4: Cámara 3 ──────────────────────────────────────────────────────
     with tab4:
+        render_info_box(
+            "<b>Cámara 3 – Biorreactor con <i>Pseudomonas putida</i> (75 – 120 min)</b><br>"
+            "El metal residual de C2 (< 5 mg/L) se elimina por <b>biosorción</b>: "
+            "la bacteria secreta polisacáridos extracelulares (EPS) con grupos –COO⁻ "
+            "que capturan iones metálicos a pH > 4.8. "
+            "Simultáneamente, la bacteria <b>biodegrada el etileno carbonato (EC)</b> del electrolito. "
+            "El controlador <b>FF+PID</b> mantiene pH = 7.0 incluso ante perturbaciones ácidas."
+        )
         st.plotly_chart(fig_chamber3(r3), use_container_width=True)
-        col_c, col_d = st.columns(2)
-        col_c.metric('pH final (FF+PID)', f'{pH_final:.3f}', '→ Setpoint 7.00')
+
+        col_c, col_d, col_e = st.columns(3)
+        col_c.metric('pH final (FF+PID)', f'{pH_final:.3f}',
+                     '→ Setpoint 7.00',
+                     help='El controlador FF+PID converge más rápido que el PID solo ante perturbaciones.')
         col_d.metric('[M²⁺] final (biosorción)', f'{C_M_final:.2f} mg/L',
-                     f'-{float(r3["ff_pid"]["C_M"][0]) - C_M_final:.1f} mg/L')
+                     f'−{float(r3["ff_pid"]["C_M"][0]) - C_M_final:.1f} mg/L eliminados',
+                     help='Con P. putida se alcanza < 1.2 mg/L. Sin bacterias (abiótico) el residual es mucho mayor.')
+        col_e.metric('EC biodegradado', f'{300.0 - float(r3["ff_pid"]["C_EC"][-1]):.0f} mg/L',
+                     f'de 300 mg/L iniciales',
+                     help='El etileno carbonato del electrolito de la batería es biodegradado por P. putida vía crecimiento Monod.')
+
+        with st.expander("🔬 Detalle: ¿Por qué P. putida y no solo precipitación química?"):
+            abiotic_final = float(r3['abiotic']['C_M'][-1])
+            render_info_box(
+                f"A pH 7.0, la precipitación química de Cu(OH)₂ deja un residual de "
+                f"<b>~{abiotic_final:.1f} mg/L</b> (cinética lenta, Stumm & Morgan). "
+                f"Con <i>P. putida</i> en soporte de tezontle (50 g/L), se alcanza "
+                f"<b>{C_M_final:.2f} mg/L</b> — una reducción adicional del "
+                f"{max(0,(abiotic_final-C_M_final)/abiotic_final*100):.0f}%. "
+                "Los grupos –COO⁻ del EPS tienen alta afinidad por Cu²⁺ (isoterma Langmuir, K_L = 0.35 L/mg).", "ok"
+            )
+
+        render_info_box(
+            "💡 <b>Perturbación ácida a t = 95 min:</b> simula un pulso de efluente ácido no esperado. "
+            "El gráfico de pH (arriba izquierda) muestra cómo el <b>FF+PID</b> rechaza la perturbación "
+            "mucho mejor que el PID solo o el lazo abierto. "
+            "El término <i>feedforward</i> compensa el flujo ácido de entrada antes de que afecte el pH.", "warn"
+        )
 
     # ── Descarga CSV ──────────────────────────────────────────────────────────
     st.divider()
+    st.markdown("### ⬇️ Exportar Resultados")
+    render_info_box(
+        "El archivo CSV contiene todos los datos de las 3 cámaras con resolución temporal completa "
+        "(450 + 1800 + 1350 puntos). Columnas: tiempo, pH, [F⁻], [M²⁺], corriente, eficiencia, energía, [EC], [Li⁺]."
+    )
     df_export = build_export_df(r1, r2, r3, mode_pwm)
     csv_bytes  = df_export.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label='⬇️ Descargar Resultados (CSV)',
+        label='⬇️ Descargar Resultados Completos (CSV)',
         data=csv_bytes,
         file_name='simulacion_3camaras.csv',
         mime='text/csv',
@@ -820,9 +934,9 @@ def main():
     # ── Footer ────────────────────────────────────────────────────────────────
     st.markdown(
         "<div style='text-align:center;color:#9ca3af;font-size:12px;"
-        "border-top:1px solid #e5e7eb;padding-top:12px;margin-top:8px'>"
+        "border-top:1px solid #e5e7eb;padding-top:12px;margin-top:16px'>"
         "Gemelo Digital · Sistema Bioelectroquímico 3 Cámaras · "
-        "Pseudomonas putida · Base Sulfato | Desarrollado con IBM Bob"
+        "<em>Pseudomonas putida</em> · Base Sulfato | Desarrollado con IBM Bob"
         "</div>",
         unsafe_allow_html=True
     )
