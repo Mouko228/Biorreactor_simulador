@@ -539,6 +539,322 @@ def fig_chamber3(r3):
                       title_text='Cámara 3 – Biorreactor (P. putida) + Control Híbrido FF+PID')
     return fig
 
+ 
+# ─────────────────────────────────────────────────────────────────────────────
+# DIAGRAMA DE PROCESO – REPRESENTACIÓN VISUAL DEL TREN DE 3 CÁMARAS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fig_process_diagram(r1, r2, r3, mode_pwm, C_M_in, C_F_in, pH_in):
+    """
+    Genera un diagrama de proceso (PFD) colorido e interactivo usando Plotly.
+    Muestra las 3 cámaras, flujos de entrada/salida y valores clave dinámicos.
+    """
+    # ── Valores de estado final de cada cámara ──────────────────────────────
+    pH_c1_out  = float(r1['pH'][-1])
+    CF_c1_out  = float(r1['C_F'][-1])
+    CM_c1_out  = float(r1['C_M'][-1])
+    CaF2_gen   = float(r1['CaF2'][-1])
+
+    cm2_key    = 'C_M_pwm' if mode_pwm == 'PWM Exponencial' else 'C_M_fix'
+    en2_key    = 'energy_pwm' if mode_pwm == 'PWM Exponencial' else 'energy_fix'
+    md2_key    = 'm_dep_pwm' if mode_pwm == 'PWM Exponencial' else 'm_dep_fix'
+    CM_c2_out  = float(r2[cm2_key][-1])
+    energy_c2  = float(r2[en2_key][-1])
+    m_dep_c2   = float(r2[md2_key][-1])
+    pH_c2_out  = float(r2['pH2_b' if mode_pwm == 'PWM Exponencial' else 'pH2_a'][-1])
+
+    pH_c3_out  = float(r3['ff_pid']['pH'][-1])
+    CM_c3_out  = float(r3['ff_pid']['C_M'][-1])
+    EC_c3_out  = float(r3['ff_pid']['C_EC'][-1])
+    Li_c3      = float(r3['C_Li'])
+
+    CM_ok  = CM_c3_out <= 1.2
+    pH_ok  = 6.5 <= pH_c3_out <= 7.5
+    CF_ok  = CF_c1_out <= 15.0
+
+    # ── Paleta de colores para cada cámara ───────────────────────────────────
+    C1_COLOR  = '#0ea5e9'   # azul cielo – neutralización
+    C2_COLOR  = '#f97316'   # naranja     – electrodeposición
+    C3_COLOR  = '#22c55e'   # verde       – biorreactor
+    C1_LIGHT  = '#e0f2fe'
+    C2_LIGHT  = '#fff7ed'
+    C3_LIGHT  = '#f0fdf4'
+    ARROW_CLR = '#64748b'
+    BG_CLR    = '#f8fafc'
+
+    fig = go.Figure()
+
+    # ── Fondo general ────────────────────────────────────────────────────────
+    fig.add_shape(type='rect', x0=0, y0=0, x1=22, y1=12,
+                  fillcolor=BG_CLR, line_width=0, layer='below')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BLOQUE: ENTRADA (efluente crudo)
+    # ─────────────────────────────────────────────────────────────────────────
+    fig.add_shape(type='rect', x0=0.2, y0=4.5, x1=2.5, y1=7.5,
+                  fillcolor='#f1f5f9', line=dict(color='#94a3b8', width=2),
+                  layer='below')
+    fig.add_annotation(x=1.35, y=7.9, text='<b>EFLUENTE</b>', showarrow=False,
+                       font=dict(size=11, color='#334155'), xanchor='center')
+    fig.add_annotation(x=1.35, y=7.2, text='<b>ENTRADA</b>', showarrow=False,
+                       font=dict(size=11, color='#334155'), xanchor='center')
+    for i, (lbl, val) in enumerate([
+        (f'pH = {pH_in:.1f}', '#dc2626'),
+        (f'M²⁺ = {C_M_in} mg/L', '#b45309'),
+        (f'F⁻ = {C_F_in} mg/L', '#0369a1'),
+        ('Li⁺ = 200 mg/L', '#7c3aed'),
+    ]):
+        fig.add_annotation(x=1.35, y=6.8 - i * 0.6, text=lbl, showarrow=False,
+                           font=dict(size=10, color=val), xanchor='center')
+
+    # Flecha entrada → C1
+    fig.add_annotation(x=3.7, y=6.0, ax=2.5, ay=6.0,
+                       xref='x', yref='y', axref='x', ayref='y',
+                       showarrow=True, arrowhead=2, arrowsize=1.4,
+                       arrowwidth=3, arrowcolor=ARROW_CLR)
+    fig.add_annotation(x=3.1, y=6.3, text='Influente', showarrow=False,
+                       font=dict(size=9, color=ARROW_CLR), xanchor='center')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BLOQUE: CÁMARA 1 – NEUTRALIZACIÓN
+    # ─────────────────────────────────────────────────────────────────────────
+    fig.add_shape(type='rect', x0=3.7, y0=2.5, x1=7.5, y1=9.5,
+                  fillcolor=C1_LIGHT, line=dict(color=C1_COLOR, width=3),
+                  layer='below')
+    # Badge de número
+    fig.add_shape(type='circle', x0=4.1, y0=8.8, x1=5.1, y1=9.8,
+                  fillcolor=C1_COLOR, line_width=0)
+    fig.add_annotation(x=4.6, y=9.3, text='<b>1</b>', showarrow=False,
+                       font=dict(size=16, color='white'), xanchor='center')
+    fig.add_annotation(x=5.6, y=9.3, text='<b>CÁMARA 1</b>', showarrow=False,
+                       font=dict(size=13, color=C1_COLOR), xanchor='center')
+    fig.add_annotation(x=5.6, y=8.7, text='Neutralización', showarrow=False,
+                       font=dict(size=11, color='#0369a1'), xanchor='center')
+    fig.add_annotation(x=5.6, y=8.3, text='Precipitación CaF₂', showarrow=False,
+                       font=dict(size=10, color='#0369a1'), xanchor='center')
+    fig.add_annotation(x=5.6, y=7.7, text='0 – 15 min', showarrow=False,
+                       font=dict(size=10, color='#64748b', family='monospace'), xanchor='center')
+
+    # Icono representativo (contenedor con ondas)
+    fig.add_shape(type='rect', x0=4.1, y0=4.5, x1=7.1, y1=7.0,
+                  fillcolor='#bae6fd', line=dict(color=C1_COLOR, width=1.5),
+                  layer='below')
+    # Ondas simuladas
+    for y_w in [5.0, 5.6, 6.2]:
+        xs = np.linspace(4.2, 7.0, 40)
+        ys = y_w + 0.12 * np.sin(np.linspace(0, 4 * np.pi, 40))
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode='lines',
+                                 line=dict(color='white', width=1.5),
+                                 showlegend=False, hoverinfo='skip'))
+
+    # Burbuja de Ca(OH)₂ dosificada
+    fig.add_annotation(x=5.6, y=4.0, text='⬆ Ca(OH)₂ dosificado',
+                       showarrow=False, font=dict(size=9, color='#0284c7'), xanchor='center')
+    fig.add_annotation(x=5.6, y=3.5, text='Control PI', showarrow=False,
+                       font=dict(size=9, color='#0284c7', family='monospace'), xanchor='center')
+
+    # KPIs de salida C1
+    CF_color = '#16a34a' if CF_ok else '#dc2626'
+    for i, (lbl, val, clr) in enumerate([
+        ('pH salida:', f'{pH_c1_out:.2f}',        '#1d4ed8'),
+        ('[F⁻]:',     f'{CF_c1_out:.1f} mg/L',   CF_color),
+        ('[M²⁺]:',    f'{CM_c1_out:.0f} mg/L',   '#b45309'),
+        ('CaF₂:',     f'{CaF2_gen:.0f} mg/L',    '#059669'),
+    ]):
+        fig.add_annotation(x=4.0 + (i % 2) * 1.7, y=3.2 - (i // 2) * 0.55,
+                           text=f'<b>{lbl}</b> {val}', showarrow=False,
+                           font=dict(size=9, color=clr), xanchor='left')
+
+    # Descarga de sólidos (CaF₂)
+    fig.add_annotation(x=5.6, y=2.1, text='⬇ CaF₂ sólido (filtrado)', showarrow=False,
+                       font=dict(size=9, color='#059669'), xanchor='center')
+    fig.add_annotation(x=5.6, y=1.6, text=f'≈ {CaF2_gen:.0f} mg/L', showarrow=False,
+                       font=dict(size=9, color='#059669'), xanchor='center')
+    fig.add_shape(type='line', x0=5.6, y0=2.5, x1=5.6, y1=2.2,
+                  line=dict(color='#059669', width=2, dash='dot'))
+
+    # Flecha C1 → C2
+    fig.add_annotation(x=10.2, y=6.0, ax=7.5, ay=6.0,
+                       xref='x', yref='y', axref='x', ayref='y',
+                       showarrow=True, arrowhead=2, arrowsize=1.4,
+                       arrowwidth=3, arrowcolor=ARROW_CLR)
+    fig.add_annotation(x=8.85, y=6.3, text='Efluente C1→C2', showarrow=False,
+                       font=dict(size=9, color=ARROW_CLR), xanchor='center')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BLOQUE: CÁMARA 2 – ELECTRODEPOSICIÓN
+    # ─────────────────────────────────────────────────────────────────────────
+    fig.add_shape(type='rect', x0=10.2, y0=2.5, x1=14.0, y1=9.5,
+                  fillcolor=C2_LIGHT, line=dict(color=C2_COLOR, width=3),
+                  layer='below')
+    fig.add_shape(type='circle', x0=10.6, y0=8.8, x1=11.6, y1=9.8,
+                  fillcolor=C2_COLOR, line_width=0)
+    fig.add_annotation(x=11.1, y=9.3, text='<b>2</b>', showarrow=False,
+                       font=dict(size=16, color='white'), xanchor='center')
+    fig.add_annotation(x=12.1, y=9.3, text='<b>CÁMARA 2</b>', showarrow=False,
+                       font=dict(size=13, color=C2_COLOR), xanchor='center')
+    fig.add_annotation(x=12.1, y=8.7, text='Electrodeposición', showarrow=False,
+                       font=dict(size=11, color='#c2410c'), xanchor='center')
+    fig.add_annotation(x=12.1, y=8.3, text=f'Control {mode_pwm[:3]}', showarrow=False,
+                       font=dict(size=10, color='#c2410c'), xanchor='center')
+    fig.add_annotation(x=12.1, y=7.7, text='15 – 75 min', showarrow=False,
+                       font=dict(size=10, color='#64748b', family='monospace'), xanchor='center')
+
+    # Celda electroquímica (ánodo / cátodo)
+    fig.add_shape(type='rect', x0=10.6, y0=4.5, x1=13.6, y1=7.0,
+                  fillcolor='#fed7aa', line=dict(color=C2_COLOR, width=1.5),
+                  layer='below')
+    # Electrodos
+    for xp, lbl, clr in [(11.1, '(+)\nÁNODO', '#dc2626'), (13.1, '(−)\nCÁTODO', '#1d4ed8')]:
+        fig.add_shape(type='rect', x0=xp - 0.12, y0=4.6, x1=xp + 0.12, y1=6.9,
+                      fillcolor=clr, line_width=0)
+        fig.add_annotation(x=xp, y=7.15, text=lbl, showarrow=False,
+                           font=dict(size=8, color=clr), xanchor='center')
+    # Burbujas en el ánodo
+    for bx, by in [(11.3, 5.3), (11.5, 5.8), (11.2, 6.2), (11.4, 6.5)]:
+        fig.add_shape(type='circle', x0=bx - 0.1, y0=by - 0.1, x1=bx + 0.1, y1=by + 0.1,
+                      fillcolor='rgba(147,197,253,0.7)', line=dict(color='#3b82f6', width=1))
+    # Flecha de corriente (PWM)
+    fig.add_annotation(x=12.1, y=4.0, text=f'⚡ {mode_pwm}',
+                       showarrow=False, font=dict(size=9, color='#ea580c'), xanchor='center')
+    fig.add_annotation(x=12.1, y=3.5, text=f'E consumida: {energy_c2:.2f} Wh',
+                       showarrow=False, font=dict(size=9, color='#ea580c', family='monospace'), xanchor='center')
+
+    # KPIs salida C2
+    for i, (lbl, val, clr) in enumerate([
+        ('pH:',        f'{pH_c2_out:.2f}',       '#1d4ed8'),
+        ('[M²⁺]:',     f'{CM_c2_out:.1f} mg/L',  '#b45309'),
+        ('Dep.:',      f'{m_dep_c2:.1f} mg',      '#059669'),
+        ('η_F:',       '85 %',                    '#16a34a'),
+    ]):
+        fig.add_annotation(x=10.7 + (i % 2) * 1.65, y=3.2 - (i // 2) * 0.55,
+                           text=f'<b>{lbl}</b> {val}', showarrow=False,
+                           font=dict(size=9, color=clr), xanchor='left')
+
+    # Descarga: metal en malla
+    fig.add_shape(type='rect', x0=11.3, y0=1.4, x1=12.9, y1=2.2,
+                  fillcolor='#fdba74', line=dict(color=C2_COLOR, width=1.5),
+                  layer='below')
+    fig.add_annotation(x=12.1, y=2.1, text=f'🔩 Cu⁰ en malla', showarrow=False,
+                       font=dict(size=9, color='#7c2d12'), xanchor='center')
+    fig.add_annotation(x=12.1, y=1.65, text=f'{m_dep_c2:.1f} mg depositados', showarrow=False,
+                       font=dict(size=9, color='#7c2d12'), xanchor='center')
+    fig.add_shape(type='line', x0=12.1, y0=2.5, x1=12.1, y1=2.2,
+                  line=dict(color=C2_COLOR, width=2, dash='dot'))
+
+    # Flecha C2 → C3
+    fig.add_annotation(x=16.7, y=6.0, ax=14.0, ay=6.0,
+                       xref='x', yref='y', axref='x', ayref='y',
+                       showarrow=True, arrowhead=2, arrowsize=1.4,
+                       arrowwidth=3, arrowcolor=ARROW_CLR)
+    fig.add_annotation(x=15.35, y=6.3, text='Efluente C2→C3', showarrow=False,
+                       font=dict(size=9, color=ARROW_CLR), xanchor='center')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BLOQUE: CÁMARA 3 – BIORREACTOR
+    # ─────────────────────────────────────────────────────────────────────────
+    fig.add_shape(type='rect', x0=16.7, y0=2.5, x1=20.5, y1=9.5,
+                  fillcolor=C3_LIGHT, line=dict(color=C3_COLOR, width=3),
+                  layer='below')
+    fig.add_shape(type='circle', x0=17.1, y0=8.8, x1=18.1, y1=9.8,
+                  fillcolor=C3_COLOR, line_width=0)
+    fig.add_annotation(x=17.6, y=9.3, text='<b>3</b>', showarrow=False,
+                       font=dict(size=16, color='white'), xanchor='center')
+    fig.add_annotation(x=18.6, y=9.3, text='<b>CÁMARA 3</b>', showarrow=False,
+                       font=dict(size=13, color=C3_COLOR), xanchor='center')
+    fig.add_annotation(x=18.6, y=8.7, text='Biorreactor', showarrow=False,
+                       font=dict(size=11, color='#15803d'), xanchor='center')
+    fig.add_annotation(x=18.6, y=8.3, text='P. putida + FF+PID', showarrow=False,
+                       font=dict(size=10, color='#15803d'), xanchor='center')
+    fig.add_annotation(x=18.6, y=7.7, text='75 – 120 min', showarrow=False,
+                       font=dict(size=10, color='#64748b', family='monospace'), xanchor='center')
+
+    # Representación del biorreactor (bacteria + soporte)
+    fig.add_shape(type='rect', x0=17.1, y0=4.5, x1=20.1, y1=7.0,
+                  fillcolor='#bbf7d0', line=dict(color=C3_COLOR, width=1.5),
+                  layer='below')
+    # Partículas de tezontle con bacterias
+    for bx, by in [(17.7, 5.0), (18.2, 5.5), (18.8, 5.1), (19.3, 5.8),
+                   (17.5, 6.0), (18.5, 6.4), (19.5, 6.3), (18.0, 6.6)]:
+        fig.add_shape(type='circle', x0=bx - 0.18, y0=by - 0.18, x1=bx + 0.18, y1=by + 0.18,
+                      fillcolor='#4ade80', line=dict(color='#15803d', width=1.5))
+    fig.add_annotation(x=18.6, y=7.15, text='🦠 P. putida / tezontle', showarrow=False,
+                       font=dict(size=8, color='#15803d'), xanchor='center')
+
+    fig.add_annotation(x=18.6, y=4.0, text='OH⁻ dosificado (FF+PID)',
+                       showarrow=False, font=dict(size=9, color='#0d9488'), xanchor='center')
+    fig.add_annotation(x=18.6, y=3.5, text='Setpoint pH = 7.0',
+                       showarrow=False, font=dict(size=9, color='#0d9488', family='monospace'), xanchor='center')
+
+    # KPIs salida C3
+    CM_clr = '#16a34a' if CM_ok else '#dc2626'
+    pH_clr = '#16a34a' if pH_ok else '#dc2626'
+    for i, (lbl, val, clr) in enumerate([
+        ('pH:',    f'{pH_c3_out:.2f}',        pH_clr),
+        ('[M²⁺]:', f'{CM_c3_out:.2f} mg/L',  CM_clr),
+        ('[EC]:',  f'{EC_c3_out:.0f} mg/L',   '#0284c7'),
+        ('Li⁺:',   f'{Li_c3:.0f} mg/L ✓',   '#7c3aed'),
+    ]):
+        fig.add_annotation(x=17.2 + (i % 2) * 1.65, y=3.2 - (i // 2) * 0.55,
+                           text=f'<b>{lbl}</b> {val}', showarrow=False,
+                           font=dict(size=9, color=clr), xanchor='left')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BLOQUE: SALIDA (efluente tratado)
+    # ─────────────────────────────────────────────────────────────────────────
+    # Flecha C3 → Salida
+    fig.add_annotation(x=21.5, y=6.0, ax=20.5, ay=6.0,
+                       xref='x', yref='y', axref='x', ayref='y',
+                       showarrow=True, arrowhead=2, arrowsize=1.4,
+                       arrowwidth=3, arrowcolor='#22c55e' if CM_ok else '#dc2626')
+
+    out_bg = '#f0fdf4' if (CM_ok and pH_ok) else '#fef2f2'
+    out_border = '#22c55e' if (CM_ok and pH_ok) else '#dc2626'
+    fig.add_shape(type='rect', x0=21.3, y0=4.5, x1=22.0, y1=7.5,
+                  fillcolor=out_bg, line=dict(color=out_border, width=2.5),
+                  layer='below')
+    status_icon = '✅' if (CM_ok and pH_ok) else '⚠️'
+    fig.add_annotation(x=21.65, y=7.8, text=f'<b>SALIDA</b>', showarrow=False,
+                       font=dict(size=10, color='#1f2328'), xanchor='center')
+    for i, (lbl, val, clr) in enumerate([
+        (f'{status_icon} pH', f'{pH_c3_out:.2f}', pH_clr),
+        ('[M²⁺]', f'{CM_c3_out:.2f}', CM_clr),
+        ('Li⁺', f'{Li_c3:.0f} mg/L', '#7c3aed'),
+    ]):
+        fig.add_annotation(x=21.65, y=7.2 - i * 0.65,
+                           text=f'<b>{lbl}</b><br>{val}', showarrow=False,
+                           font=dict(size=9, color=clr), xanchor='center')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # LEYENDA DE PROCESOS (parte superior)
+    # ─────────────────────────────────────────────────────────────────────────
+    for lx, ly, lc, ltxt in [
+        (4.5, 11.2, C1_COLOR, '🧪 Neutralización · pH Control PI · CaF₂'),
+        (11.0, 11.2, C2_COLOR, '⚡ Electrodeposición · Malla inox 316L · PWM'),
+        (17.5, 11.2, C3_COLOR, '🧬 Biorreactor · P. putida · FF+PID'),
+    ]:
+        fig.add_shape(type='rect', x0=lx - 0.3, y0=10.8, x1=lx + 0.5, y1=11.5,
+                      fillcolor=lc, line_width=0, layer='below')
+        fig.add_annotation(x=lx + 0.7, y=11.2, text=ltxt, showarrow=False,
+                           font=dict(size=10, color='#1e293b'), xanchor='left')
+
+    # ── Layout ───────────────────────────────────────────────────────────────
+    fig.update_xaxes(visible=False, range=[0, 22.5])
+    fig.update_yaxes(visible=False, range=[0.8, 12.5])
+    fig.update_layout(
+        height=560,
+        margin=dict(l=10, r=10, t=50, b=10),
+        plot_bgcolor=BG_CLR,
+        paper_bgcolor='white',
+        title=dict(
+            text='<b>Diagrama de Proceso – Sistema Bioelectroquímico Automatizado de 3 Cámaras</b>',
+            font=dict(size=14, color='#1e293b'),
+            x=0.5, xanchor='center',
+        ),
+        showlegend=False,
+    )
+    return fig
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # INTERFAZ STREAMLIT – MEJORADA CON EXPLICACIONES
@@ -546,47 +862,106 @@ def fig_chamber3(r3):
 
 EXPLAINER_CSS = """
 <style>
+/* ── Base ─────────────────────────────────────────────────────────── */
+html, body, [class*="css"] {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+/* ── Info boxes ──────────────────────────────────────────────────── */
 .explainer-box {
     background: #f0f9ff;
     border-left: 4px solid #3b82f6;
-    border-radius: 6px;
-    padding: 12px 16px;
-    margin-bottom: 10px;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 8px 0 16px 0;
     font-size: 14px;
-    line-height: 1.6;
+    line-height: 1.7;
     color: #1e3a5f;
 }
 .explainer-box b { color: #1d4ed8; }
 .warn-box {
     background: #fff7ed;
     border-left: 4px solid #f97316;
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin-bottom: 10px;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0 16px 0;
     font-size: 13px;
+    line-height: 1.65;
     color: #7c2d12;
 }
 .success-box {
     background: #f0fdf4;
     border-left: 4px solid #22c55e;
-    border-radius: 6px;
-    padding: 10px 14px;
-    margin-bottom: 10px;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0 16px 0;
     font-size: 13px;
+    line-height: 1.65;
     color: #14532d;
 }
-.step-badge {
-    display:inline-block;
-    background:#1d4ed8;
-    color:white;
-    border-radius:50%;
-    width:24px; height:24px;
-    text-align:center;
-    line-height:24px;
-    font-weight:700;
-    margin-right:8px;
-    font-size:13px;
+
+/* ── KPI cards ───────────────────────────────────────────────────── */
+.kpi-card {
+    background: #f7f8fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 16px 12px 14px 12px;
+    text-align: center;
 }
+.kpi-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #57606a;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    display: block;
+}
+.kpi-value {
+    font-size: 22px;
+    font-weight: 800;
+    color: #1f2328;
+    line-height: 1.15;
+    display: block;
+    margin-bottom: 6px;
+    word-break: break-word;
+}
+.kpi-hint {
+    font-size: 11px;
+    color: #6b7280;
+    display: block;
+    line-height: 1.4;
+}
+
+/* ── Flow cards (tab 0) ──────────────────────────────────────────── */
+.flow-card {
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.9;
+}
+
+/* ── Step badge ──────────────────────────────────────────────────── */
+.step-badge {
+    display: inline-block;
+    background: #1d4ed8;
+    color: white;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    text-align: center;
+    line-height: 24px;
+    font-weight: 700;
+    margin-right: 8px;
+    font-size: 13px;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────── */
+section[data-testid="stSidebar"] > div:first-child { padding-top: 1.5rem; }
+section[data-testid="stSidebar"] .stSlider > label { font-size: 13px; font-weight: 600; }
+section[data-testid="stSidebar"] h3 { font-size: 13px; color: #374151; margin-top: 0.4rem; }
 </style>
 """
 
@@ -607,15 +982,32 @@ def main():
 
     # ── Cabecera ─────────────────────────────────────────────────────────────
     st.markdown("""
-    <div style='background:linear-gradient(90deg,#1e3a5f,#0f766e);
-                padding:18px 28px;border-radius:10px;margin-bottom:4px'>
-      <h2 style='color:white;margin:0'>
-        ⚗️ Gemelo Digital – Sistema Bioelectroquímico Automatizado de 3 Cámaras
-      </h2>
-      <p style='color:#94d5c9;margin:4px 0 0 0;font-size:14px'>
-        Recuperación de Metales + Biorremediación | Efluente Baterías Ion-Litio |
-        Base Sulfato – Cero Cloruros | <em>Pseudomonas putida</em> en soporte volcánico (tezontle)
-      </p>
+         <div style='background:linear-gradient(135deg,#1e3a5f 0%,#0f766e 100%);
+                padding:26px 32px 22px 32px;border-radius:12px;margin-bottom:16px;
+                box-shadow:0 2px 12px rgba(0,0,0,0.15)'>
+      <h1 style='color:white;margin:0 0 8px 0;font-size:22px;font-weight:800;
+                 letter-spacing:-0.01em;line-height:1.3'>
+        ⚗️&nbsp; Gemelo Digital
+        <span style='font-weight:400;font-size:18px'>&ndash; Sistema Bioelectroquímico Automatizado de 3 Cámaras</span>
+      </h1>
+      <div style='display:flex;flex-wrap:wrap;gap:10px;margin-top:4px'>
+        <span style='background:rgba(255,255,255,0.15);color:#e0f2fe;border-radius:20px;
+                     padding:3px 12px;font-size:12px;font-weight:500'>
+          🔩 Recuperación de Metales
+        </span>
+        <span style='background:rgba(255,255,255,0.15);color:#d1fae5;border-radius:20px;
+                     padding:3px 12px;font-size:12px;font-weight:500'>
+          🧬 Biorremediación · <em>P. putida</em>
+        </span>
+        <span style='background:rgba(255,255,255,0.15);color:#fef3c7;border-radius:20px;
+                     padding:3px 12px;font-size:12px;font-weight:500'>
+          🔋 Efluente Baterías Ion-Litio
+        </span>
+        <span style='background:rgba(255,255,255,0.15);color:#ede9fe;border-radius:20px;
+                     padding:3px 12px;font-size:12px;font-weight:500'>
+          ⚗️ Base Sulfato – Cero Cloruros
+        </span>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -743,32 +1135,45 @@ lo que hace la respuesta más rápida ante perturbaciones que el PID solo.
     C_M_final  = float(r3['ff_pid']['C_M'][-1])
     pH_final   = float(r3['ff_pid']['pH'][-1])
 
-    st.markdown("### 📊 Indicadores Clave de Desempeño (KPIs)")
+    st.markdown(
+        "<p class='section-title' style='font-size:17px;font-weight:700;color:#1f2328;"
+        "margin:20px 0 4px 0;padding-bottom:8px;border-bottom:2px solid #e5e7eb'>"
+        "📊 Indicadores Clave de Desempeño (KPIs)</p>",
+        unsafe_allow_html=True
+    )
     render_info_box(
-        "Los KPIs muestran el resultado <b>al final del proceso completo (t = 120 min)</b>. "
-        "Valores resaltados en verde indican que se cumplió el objetivo de diseño."
+        "Resultados <b>al final del proceso completo (t = 120 min)</b>. "
+        "Verde = objetivo cumplido."
     )
 
-    kpi_cols = st.columns(6)
-    kpis = [
-        ('🧪 F⁻ abatido C1',    f'{F_abatido:.1f} mg/L',  '#fef3c7', f'de {C_F_in} mg/L iniciales'),
-        ('⬜ CaF₂ generado',     f'{g_CaF2:.2f} g',        '#ecfdf5', 'subproducto sólido recuperable'),
-        ('🔩 Metal en malla',    f'{m_dep_pwm:.1f} mg',    '#eff6ff', 'electrodeposición PWM'),
-        ('⚡ Ahorro energía',    f'{pct_ahorro:.1f} %',    '#f5f3ff', 'PWM vs corriente fija'),
-        ('🏁 Metal salida C3',   f'{C_M_final:.2f} mg/L',  '#fef2f2' if C_M_final > 1.2 else '#f0fdf4',
-         '✅ < 1.2 mg/L objetivo' if C_M_final <= 1.2 else '⚠️ > 1.2 mg/L objetivo'),
-        ('🔋 Li⁺ recuperable',  '200.0 mg/L',             '#f0fdf4', '100% conservado (E₀ = −3.04 V)'),
-    ]
-    for col, (title, val, bg, hint) in zip(kpi_cols, kpis):
+    # Primera fila — 3 KPIs
+    r_a, r_b, r_c = st.columns(3, gap="medium")
+    # Segunda fila — 3 KPIs
+    r_d, r_e, r_f = st.columns(3, gap="medium")
+
+    def _kpi(col, icon, label, value, hint, accent="#1f2328"):
         col.markdown(
-            f"<div style='background:{bg};border-radius:8px;padding:12px;text-align:center;"
-            f"border:1px solid #e5e7eb'>"
-            f"<div style='font-size:11px;color:#57606a'>{title}</div>"
-            f"<div style='font-size:20px;font-weight:700;color:#1f2328'>{val}</div>"
-            f"<div style='font-size:10px;color:#6b7280;margin-top:2px'>{hint}</div>"
+            f"<div class='kpi-card'>"
+            f"<span class='kpi-label'>{icon} {label}</span>"
+            f"<span class='kpi-value' style='color:{accent}'>{value}</span>"
+            f"<span class='kpi-hint'>{hint}</span>"
             f"</div>",
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
+
+    _kpi(r_a, '🧪', 'F⁻ abatido C1',  f'{F_abatido:.1f} mg/L',
+         f'de {C_F_in} mg/L iniciales', '#b45309')
+    _kpi(r_b, '⬜', 'CaF₂ generado',   f'{g_CaF2:.2f} g',
+         'subproducto sólido recuperable', '#059669')
+    _kpi(r_c, '🔩', 'Metal en malla',  f'{m_dep_pwm:.1f} mg',
+         'electrodeposición PWM', '#1d4ed8')
+    _kpi(r_d, '⚡', 'Ahorro energía',  f'{pct_ahorro:.1f} %',
+         'PWM vs corriente fija', '#7c3aed')
+    _kpi(r_e, '🏁', 'Metal salida C3', f'{C_M_final:.2f} mg/L',
+         '✅ < 1.2 mg/L objetivo' if C_M_final <= 1.2 else '⚠️ > 1.2 mg/L',
+         '#16a34a' if C_M_final <= 1.2 else '#dc2626')
+    _kpi(r_f, '🔋', 'Li⁺ recuperable', '200.0 mg/L',
+         '100% conservado (E₀ = −3.04 V)', '#7c3aed')
 
     # Balance de masa
     m_in_C2    = float(r1['C_M'][-1]) * V_CHAMBER
@@ -783,12 +1188,76 @@ lo que hace la respuesta más rápida ante perturbaciones que el PID solo.
     st.divider()
 
     # ── Pestañas ───────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4 = st.tabs([
+        '🏭 Diagrama del Sistema',
         '📊 Vista General del Tren',
         '⚗️ Cámara 1 – Pretratamiento',
         '⚡ Cámara 2 – Electrocelda',
         '🧬 Cámara 3 – Biorreactor',
     ])
+
+    # ─── TAB 0: Diagrama de proceso ────────────────────────────────────────────
+    with tab0:
+        render_info_box(
+            "<b>Diagrama de Proceso del Sistema (PFD) – valores en tiempo real.</b> "
+            "Cada bloque representa una cámara del tren de tratamiento. "
+            "Las <b>flechas</b> muestran el flujo del efluente entre etapas. "
+            "Los <b>valores de salida</b> se actualizan con cada simulación. "
+            "Los colores de los KPIs son <span style='color:#16a34a'><b>verde ✅</b></span> si se cumple el objetivo "
+            "o <span style='color:#dc2626'><b>rojo</b></span> si no."
+        )
+        st.plotly_chart(
+            fig_process_diagram(r1, r2, r3, mode_pwm, C_M_in, C_F_in, pH_in),
+            use_container_width=True,
+        )
+        # Tabla resumen del flujo inter-cámaras
+        st.markdown("<p style='font-size:15px;font-weight:700;margin:16px 0 10px 0;color:#374151'>"
+                    "🔄 Flujo de Variables entre Cámaras</p>",
+                    unsafe_allow_html=True)
+        col_d1, col_d2, col_d3 = st.columns(3, gap="medium")
+        with col_d1:
+            st.markdown(
+                f"<div class='flow-card' style='background:#e0f2fe;border-left:4px solid #0ea5e9'>"
+                f"<b style='color:#0369a1;font-size:14px'>🧪 CÁMARA 1 — Salida</b><br><br>"
+                f"pH &nbsp;→&nbsp; <b>{float(r1['pH'][-1]):.2f}</b> "
+                f"<span style='color:#64748b;font-size:12px'>(setpoint 4.00)</span><br>"
+                f"[F⁻] &nbsp;→&nbsp; <b>{float(r1['C_F'][-1]):.1f} mg/L</b><br>"
+                f"[M²⁺] →&nbsp; <b>{float(r1['C_M'][-1]):.0f} mg/L</b><br>"
+                f"CaF₂ →&nbsp; <b>{float(r1['CaF2'][-1]):.0f} mg/L</b> precipitado"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with col_d2:
+            cm2_val = float(r2['C_M_pwm' if mode_pwm == 'PWM Exponencial' else 'C_M_fix'][-1])
+            en2_val = float(r2['energy_pwm' if mode_pwm == 'PWM Exponencial' else 'energy_fix'][-1])
+            md2_val = float(r2['m_dep_pwm' if mode_pwm == 'PWM Exponencial' else 'm_dep_fix'][-1])
+            st.markdown(
+                f"<div class='flow-card' style='background:#fff7ed;border-left:4px solid #f97316'>"
+                f"<b style='color:#c2410c;font-size:14px'>⚡ CÁMARA 2 — Salida</b><br><br>"
+                f"[M²⁺] →&nbsp; <b>{cm2_val:.1f} mg/L</b><br>"
+                f"Cu⁰ dep. →&nbsp; <b>{md2_val:.1f} mg</b><br>"
+                f"Energía →&nbsp; <b>{en2_val:.3f} Wh</b><br>"
+                f"Modo →&nbsp; <b>{mode_pwm}</b>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with col_d3:
+            cm3_val = float(r3['ff_pid']['C_M'][-1])
+            ph3_val = float(r3['ff_pid']['pH'][-1])
+            ec3_val = float(r3['ff_pid']['C_EC'][-1])
+            ok_str  = "✅ Cumple objetivos" if (cm3_val <= 1.2 and 6.5 <= ph3_val <= 7.5) else "⚠️ Revisar parámetros"
+            ok_clr  = '#15803d' if (cm3_val <= 1.2 and 6.5 <= ph3_val <= 7.5) else '#dc2626'
+            st.markdown(
+                f"<div class='flow-card' style='background:#f0fdf4;border-left:4px solid #22c55e'>"
+                f"<b style='color:#15803d;font-size:14px'>🧬 CÁMARA 3 — Salida</b><br><br>"
+                f"pH &nbsp;→&nbsp; <b>{ph3_val:.2f}</b> "
+                f"<span style='color:#64748b;font-size:12px'>(setpoint 7.00)</span><br>"
+                f"[M²⁺] →&nbsp; <b>{cm3_val:.2f} mg/L</b><br>"
+                f"EC biodeg. →&nbsp; <b>{300 - ec3_val:.0f} mg/L</b><br>"
+                f"<span style='color:{ok_clr}'><b>{ok_str}</b></span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
     # ─── TAB 1: Vista general ──────────────────────────────────────────────────
     with tab1:
