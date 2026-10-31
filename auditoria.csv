@@ -1,0 +1,8 @@
+id,camara,sev,desc,prop
+A4,C1,Medio,C_F_eq_mgL=11.5 fijo; no depende de [Ca2+] ni fuerza ionica.,"Calcular C_F_eq = f(Ksp_cond, gamma_Ca, gamma_F) en cada paso."
+A6,C1,Medio,Ca2+ inicial=0; ignora Ca2+ natural del efluente (~0.5-2 mM).,Agregar parametro C_Ca2_in [mM] con default 1.0 mM.
+B3,C2,Medio,eta_F_max=0.85 incluso con I_app<<I_lim (regimen cinetico).,Usar eta=eta_max*(1-exp(-I_L/I_app*k_kin)) para regimen cinetico.
+B4,C2,Medio,E_cell->inf cuando C_M->0 (Nernst). Energia sobreestimada al final.,Limitar E_cell <= E0_cell+0.5 V o usar C_min=1 mg/L operativo.
+C3,C3,Medio,"max(X,0.01) oculta colapso real de biomasa.",Registrar advertencia si X toca el limite inferior.
+C5,C3,Medio,Filtro derivativo usa -dpH como proxy de de/dt; error en transitorios.,Usar estado error_prev y calcular dd_filt=(err-err_prev)/dt-dfilt)/tau_d.
+C6,C3,ALTO,k_ppco(Co2+)=1e-5 s-1 implica precipitacion a pH 7. Pero Ksp(Co(OH)2)=5.92e-15 => [Co2+]_eq=592 mM a pH 7: NO precipita.,Poner k_ppco(Co2+)=0. Remocion de Co2+ depende solo de biosorccion.
